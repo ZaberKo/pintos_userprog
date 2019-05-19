@@ -25,22 +25,6 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
-//作为孩子元素的线程信息
-// 当原来线程被摧毁之后，仍然存在。只有当父进程读到他结束的状态之后，才释放。
-struct as_child_thread{
-    tid_t tid;
-    int exit_status;
-    struct list_elem child_thread_elem;
-    bool bewaited;
-    struct semaphore sema;
-};
-
-//被某个线程打开的文件
-struct opened_file{
-    int fd;
-    struct file* file;
-    struct list_elem file_elem;
-};
 
 /* A kernel thread or user process.
 
@@ -111,6 +95,23 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
+    int exit_code;
+
+    //used for blockint in syscall "exec"
+    struct semaphore load_sema;
+    bool load_success;
+
+    //used for blockint in syscall "wait"
+    struct child_info *wait_child;
+
+    //record the relationship
+    struct list children_list;//include finished but not be "wait"ed children
+    struct thread *parent;
+
+    struct list files;
+    struct file *exe; //self executable file
+    int fd_cnt;
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
@@ -118,20 +119,28 @@ struct thread
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
-
-
-    struct semaphore exec_sema; //用于exec同步，只有当子进程load成功后，父进程才能从exec返回
-    bool exec_success; //用于exec,判断子进程是否成功load its executable
-    struct thread* parent; //父进程
-    struct list childs; //子进程
-    int exit_status; //退出状态
-    struct list files;//打开的文件
-    struct file * self_file; //自己这个可执行文件
-    int next_fd; //可使用的文件描述符
-    struct as_child_thread * pointer_as_child_thread; //指向“作为孩子的struct”的指针
-
   };
 
+/*
+  used for syscall "wait"
+*/
+struct child_info
+{
+  struct list_elem child_elem;
+  tid_t tid;
+  int exit_code;
+  bool is_exit;
+  bool bewaited;
+  struct thread *child; // only used for remove_all_children_info(); dealed with orphaned process problem
+  struct semaphore wait_sema;
+};
+
+struct opened_file
+{
+  int fd;
+  struct file *file;
+  struct list_elem file_elem;
+};
 
 
 /* If false (default), use round-robin scheduler.
@@ -172,6 +181,14 @@ int thread_get_load_avg (void);
 
 void acquire_file_lock(void);
 void release_file_lock(void);
+bool held_file_lock(void);
 
+
+void close_all_files(struct list* files);
+
+struct child_info *get_child_info(struct thread *th,tid_t tid);
+void add_child_info(struct thread *th,struct child_info *ch);
+void remove_child_info(struct thread *th, tid_t tid);
+void remove_all_children_info(struct thread *th);
 
 #endif /* threads/thread.h */

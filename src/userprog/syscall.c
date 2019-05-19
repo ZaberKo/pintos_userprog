@@ -15,197 +15,378 @@
 #include "pagedir.h"
 
 static void syscall_handler (struct intr_frame *);
-static void verity_address_multiple(int * p, int num);
-static void verity_address(void * p);
-struct opened_file * search_file(int fd);
 
-void
-syscall_init (void)
+void syscall_halt(void);
+void syscall_exit(int *sp);
+int syscall_exec(int *sp);
+int syscall_wait(int *sp);
+
+int syscall_create(int *sp);
+int syscall_remove(int *sp);
+int syscall_open(int *sp);
+int syscall_filesize(int *sp);
+int syscall_read(int *sp);
+int syscall_write(int *sp);
+void syscall_seek(int *sp);
+int syscall_tell(int *sp);
+void syscall_close(int *sp);
+void is_valid_vaddr(const void *vaddr);
+void exit(int exit_code);
+struct opened_file *search_file(int fd);
+
+void exit(int exit_code)
 {
-  intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
+  thread_current()->exit_code = exit_code;
+  thread_exit();
 }
 
 void unexpected_exit(){
-  thread_current()->exit_status = -1;
-  thread_exit ();
+  exit(-1);
 }
 
+void is_valid_vaddr(const void *vaddr)
+{
+  if (vaddr == NULL)
+    unexpected_exit();
 
-void verity_address_multiple(int *p, int num){
-  int *p2=p;
-  for(int i=0; i<num; i++,p2++) verity_address((void *)p2);
+  //access kernel page
+  if (!is_user_vaddr(vaddr) || !is_user_vaddr(vaddr + 4))
+    unexpected_exit();
+
+  //unmapped page
+  if (pagedir_get_page(thread_current()->pagedir, vaddr) == NULL)
+    unexpected_exit();
 }
 
-void verity_address(void *p){
-  if (p==NULL) unexpected_exit();
-  if(!is_user_vaddr(p)) unexpected_exit();
-  if(!is_user_vaddr(p+4)) unexpected_exit();
-  if(!pagedir_get_page(thread_current()->pagedir,p)) unexpected_exit();
-
+/*
+  get 4 byte information.
+  the unit of offset is word(4 byte), or just consider as the arg index in stack sp
+*/
+void get_stack_elem(int *sp, int *val, int offset)
+{
+  //note: beware of invalid access
+  is_valid_vaddr(sp + offset);
+  *val = *(sp + offset);
 }
 
-struct opened_file * search_file(int fd){
-  struct list_elem *e;
-  struct opened_file * opf =NULL;
-  struct list *files = &thread_current()->files;
-  for (e = list_begin (files); e != list_end (files); e = list_next (e)){
-    opf = list_entry (e, struct opened_file, file_elem);
-    if (fd==opf->fd)
-      return opf;
+struct opened_file *search_file(int fd)
+{
+  struct list_elem *elem;
+  struct opened_file *of = NULL;
+  struct thread *cur = thread_current();
+
+  for (elem = list_begin(&cur->files);
+       elem != list_end(&cur->files);
+       elem = list_next(elem))
+  {
+    of = list_entry(elem, struct opened_file, file_elem);
+    if (of->fd == fd)
+      return of;
   }
-  return false;
+  return NULL;
 }
 
+void syscall_init(void)
+{
+  intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
+}
 
 static void
-syscall_handler (struct intr_frame *f UNUSED)
+syscall_handler(struct intr_frame *f UNUSED)
 {
-  int * p =f->esp;
-  verity_address((void *)p);
-  int type=*p++;
+  int *sp = f->esp;
+  is_valid_vaddr(sp);
 
-  switch (type){
-    case SYS_HALT:
-      shutdown_power_off();
+  //stack top is NUMBER
+  int syscall_type = (*sp);
+  switch (syscall_type)
+  {
+  case SYS_HALT:
+    syscall_halt();
+    break;
+  case SYS_EXIT:
+    syscall_exit(sp);
+    break;
+  case SYS_EXEC:
+    f->eax = syscall_exec(sp);
+    break;
+  case SYS_WAIT:
+    f->eax = syscall_wait(sp);
+    break;
+  case SYS_CREATE:
+    f->eax = syscall_create(sp);
+    break;
+  case SYS_REMOVE:
+    f->eax = syscall_remove(sp);
+    break;
+  case SYS_OPEN:
+    f->eax = syscall_open(sp);
+    break;
+  case SYS_FILESIZE:
+    f->eax = syscall_filesize(sp);
+    break;
+  case SYS_READ:
+    f->eax = syscall_read(sp);
+    break;
+  case SYS_WRITE:
+    f->eax = syscall_write(sp);
+    break;
+  case SYS_SEEK:
+    syscall_seek(sp);
+    break;
+  case SYS_TELL:
+    f->eax = syscall_tell(sp);
+    break;
+  case SYS_CLOSE:
+    syscall_close(sp);
+    break;
 
-    case SYS_EXIT:
-      verity_address((void *)p);
-      thread_current()->exit_status = *p;
-      thread_exit ();
+  default:
+    printf("unknown syscall: %d\n", syscall_type);
+    break;
+  }
+}
 
-    case SYS_EXEC:
-      verity_address((void *)p);
-      verity_address((void*)*p);
-      f->eax = process_execute((char*)*p);
-      break;
+void syscall_halt(void)
+{
+  shutdown_power_off();
+}
 
-    case SYS_WAIT:
-      verity_address((void *)p);
-      f->eax = process_wait(*p);
-      break;
+void syscall_exit(int *sp)
+{
+  int exit_code;
+  struct thread *cur = thread_current();
+  get_stack_elem(sp, &exit_code, 1);
 
-    case SYS_CREATE:
-      verity_address_multiple(p, 2);
-      verity_address((void*)*p);
+  cur->exit_code = exit_code;
+
+  thread_exit();
+}
+
+int syscall_exec(int *sp)
+{
+  char *file_name;
+  get_stack_elem(sp, &file_name, 1);
+  is_valid_vaddr(file_name);
+
+  return process_execute(file_name);
+}
+
+int syscall_wait(int *sp)
+{
+  tid_t child_id;
+  get_stack_elem(sp, &child_id, 1);
+  return process_wait(child_id);
+}
+
+//don't use bool for 32-bit align
+int syscall_create(int *sp)
+{
+  bool success;
+  int initial_size;
+  char *file_name;
+
+  get_stack_elem(sp, &file_name, 1);
+  get_stack_elem(sp, &initial_size, 2);
+
+  is_valid_vaddr(file_name);
+
+  acquire_file_lock();
+  success = filesys_create(file_name, initial_size);
+  release_file_lock();
+
+  return success;
+}
+int syscall_remove(int *sp)
+{
+  bool success;
+  char *file_name;
+
+  get_stack_elem(sp, &file_name, 1);
+  is_valid_vaddr(file_name);
+
+  acquire_file_lock();
+  success = filesys_remove(file_name);
+  release_file_lock();
+  
+  return success;
+}
+
+int syscall_open(int *sp)
+{
+  int fd;
+  char *file_name;
+
+  get_stack_elem(sp, &file_name, 1);
+  is_valid_vaddr(file_name);
+
+  struct thread *cur = thread_current();
+
+  acquire_file_lock();
+  struct file *file = filesys_open(file_name);
+  release_file_lock();
+
+  if (file != NULL)
+  {
+    struct opened_file *of = malloc(sizeof(struct opened_file));
+    of->fd = cur->fd_cnt++;
+    of->file = file;
+    list_push_back(&cur->files, &of->file_elem);
+    fd = of->fd;
+  }
+  else
+  {
+    fd = -1;
+  }
+
+  return fd;
+}
+
+int syscall_filesize(int *sp)
+{
+  int filesize;
+  int fd;
+
+  get_stack_elem(sp, &fd, 1);
+
+  struct opened_file *of = search_file(fd);
+
+  if (of != NULL)
+  {
+    acquire_file_lock();
+    filesize = file_length(of->file);
+    release_file_lock();
+  }
+  else
+  {
+    filesize = -1;
+  }
+  return filesize;
+}
+
+int syscall_read(int *sp)
+{
+  int readsize;
+  int fd;
+  char *buffer;
+  int size;
+
+  get_stack_elem(sp, &fd, 1);
+  get_stack_elem(sp, &buffer, 2);
+  get_stack_elem(sp, &size, 3);
+
+  is_valid_vaddr(buffer);
+
+  if (fd == 0)
+  {
+    for (int i = 0; i < size; i++)
+      buffer[i] = input_getc();
+
+    readsize = size;
+  }
+  else
+  {
+    struct opened_file *of = search_file(fd);
+    if (of != NULL)
+    {
       acquire_file_lock();
-      f->eax = filesys_create((const char *)*p,*(p+1));
+      readsize = file_read(of->file, buffer, size);
       release_file_lock();
-      break;
+    }
+    else
+    {
+      readsize = -1;
+    }
+  }
+  return readsize;
+}
+int syscall_write(int *sp)
+{
+  int writesize;
+  int fd;
+  void *buffer;
+  int size;
 
-    case SYS_REMOVE:
-      verity_address((void *)p);
-      verity_address((void*)*p);
+  get_stack_elem(sp, &fd, 1);
+  get_stack_elem(sp, &buffer, 2);
+  get_stack_elem(sp, &size, 3);
+
+  is_valid_vaddr(buffer);
+
+  if (fd == 1)
+  {
+    putbuf(buffer, size);
+    writesize = size;
+  }
+  else
+  {
+    struct opened_file *of = search_file(fd);
+    if (of != NULL)
+    {
       acquire_file_lock();
-      f->eax = filesys_remove((const char *)*p);
+      writesize = file_write(of->file, buffer, size);
       release_file_lock();
-      break;
+    }
+    else
+    {
+      writesize = 0;
+    }
+  }
 
-    case SYS_OPEN:
-      verity_address((void *)p);
-      verity_address((void*)*p);
-      struct thread * t=thread_current();
-      acquire_file_lock();
-      struct file * thefile =filesys_open((const char *)*p);
-      release_file_lock();
-      if(thefile){
-        struct opened_file *of = malloc(sizeof(struct opened_file));
-        of->fd = t->next_fd++;
-        of->file = thefile;
-        list_push_back(&t->files, &of->file_elem);
-        f->eax = of->fd;
-      } else
-        f->eax = -1;
-      break;
+  return writesize;
+}
+void syscall_seek(int *sp)
+{
+  int fd;
+  int position;
 
-    case SYS_FILESIZE:
-      verity_address((void *)p);
-      struct opened_file * thefile2 = search_file(*p);
-      if (thefile2){
-        acquire_file_lock();
-        f->eax = file_length(thefile2->file);
-        release_file_lock();
-      } else
-        f->eax = -1;
-      break;
+  get_stack_elem(sp, &fd, 1);
+  get_stack_elem(sp, &position, 2);
 
-    case SYS_READ:
-      verity_address_multiple(p, 3);
-      verity_address((void*)*(p+1));
-      int fd = *p;
-      uint8_t * buffer = (uint8_t*)*(p+1);
-      off_t size = *(p+2);
-      if (fd==0) {
-        for (int i=0; i<size; i++)
-          buffer[i] = input_getc();
-        f->eax = size;
-      }
-      else{
-        struct opened_file * thefile3 = search_file(*p);
-        if (thefile3){
-          acquire_file_lock();
-          f->eax = file_read(thefile3->file, buffer, size);
-          release_file_lock();
-        } else
-          f->eax = -1;
-      }
-      break;
+  struct opened_file *of = search_file(fd);
 
-    case SYS_WRITE:
-      verity_address_multiple(p, 3);
-      verity_address((void*)*(p+1));
-      int fd2 = *p;
-      const char * buffer2 = (const char *)*(p+1);
-      off_t size2 = *(p+2);;
-      if (fd2==1) {
-        putbuf(buffer2,size2);
-        f->eax = size2;
-      }
-      else{
-        struct opened_file * thefile4 = search_file(*p);
-        if (thefile4){
-          acquire_file_lock();
-          f->eax = file_write(thefile4->file, buffer2, size2);
-          release_file_lock();
-        } else
-          f->eax = 0;
-      }
-      break;
+  if (of != NULL)
+  {
+    acquire_file_lock();
+    file_seek(of->file, position);
+    release_file_lock();
+  }
+}
+int syscall_tell(int *sp)
+{
+  int pos;
+  int fd;
 
-    case SYS_SEEK:
-      verity_address_multiple(p, 2);
-      struct opened_file * thefile5 = search_file(*p);
-      if (thefile5){
-        acquire_file_lock();
-        file_seek(thefile5->file, *(p+1));
-        release_file_lock();
-      }
-      break;
+  get_stack_elem(sp, &fd, 1);
 
-    case SYS_TELL:
-      verity_address((void *)p);
-      struct opened_file * thefile6 = search_file(*p);
-      if (thefile6){
-        acquire_file_lock();
-        f->eax = file_tell(thefile6->file);
-        release_file_lock();
-      }else
-        f->eax = -1;
-      break;
+  struct opened_file *of = search_file(fd);
+  if (of != NULL)
+  {
+    acquire_file_lock();
+    pos = file_tell(of->file);
+    release_file_lock();
+  }
+  else
+  {
+    pos = -1;
+  }
 
-    case SYS_CLOSE:
-      verity_address((void *)p);
-      struct opened_file * openf=search_file(*p);
-      if (openf){
-        acquire_file_lock();
-        file_close(openf->file);
-        release_file_lock();
-        list_remove(&openf->file_elem);
-        free(openf);
-      }
-      break;
+  return pos;
+}
 
-    default:
-      unexpected_exit();
-      break;
+void syscall_close(int *sp)
+{
+  int fd;
+  get_stack_elem(sp, &fd, 1);
+
+  struct opened_file *of = search_file(fd);
+  if (of != NULL)
+  {
+    acquire_file_lock();
+    file_close(of->file);
+    release_file_lock();
+
+    list_remove(&of->file_elem);
+    free(of);
   }
 }

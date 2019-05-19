@@ -196,13 +196,13 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
 
-  //初始化孩子元素
-  t->pointer_as_child_thread = malloc(sizeof(struct as_child_thread));
-  t->pointer_as_child_thread->tid=tid;
-  t->pointer_as_child_thread->exit_status=UINT32_MAX;
-  t->pointer_as_child_thread->bewaited = false;
-  sema_init(&t->pointer_as_child_thread->sema,0);
-  list_push_back (&thread_current()->childs, &t->pointer_as_child_thread->child_thread_elem);
+  
+  t->wait_child = malloc(sizeof(struct child_info));
+  t->wait_child->tid=tid;
+  t->wait_child->exit_code=UINT32_MAX;
+  t->wait_child->bewaited = false;
+  sema_init(&t->wait_child->wait_sema,0);
+  list_push_back (&thread_current()->children_list, &t->wait_child->child_elem);
 
 
   /* Stack frame for kernel_thread(). */
@@ -310,36 +310,29 @@ thread_exit (void)
 
   intr_disable ();
 
+  struct thread *cur=thread_current();
   //打印退出的话
-  printf("%s: exit(%d)\n",thread_name(),thread_current()->exit_status);
+  printf("%s: exit(%d)\n",thread_name(),cur->exit_code);
 
   //信号量加上
-  thread_current()->pointer_as_child_thread->exit_status=thread_current()->exit_status;
-  sema_up(&thread_current()->pointer_as_child_thread->sema);
+  cur->wait_child->exit_code=cur->exit_code;
+  sema_up(&cur->wait_child->wait_sema);
 
-  //关闭可执行文件，间接允许了对该可执行文件进行修改（file_allow_write）
-  file_close(thread_current()->self_file);
+ 
 
- // 关闭所有打开的文件
-  struct list_elem *e;
-  struct list *files = &thread_current()->files;
-  while(!list_empty(files))
-  {
-    e = list_pop_front(files);
-    struct opened_file *f = list_entry (e, struct opened_file, file_elem);
-    acquire_file_lock();
-    file_close(f->file);
-    release_file_lock();
-    list_remove(e);
-    free(f);
+  close_all_files(&cur->files);
 
-  }
+  acquire_file_lock();
+  file_close(cur->exe);
+  release_file_lock();
+
+
 
   /* Remove thread from all threads list, set our status to dying,
      and schedule another process.  That process will destroy us
      when it calls thread_schedule_tail(). */
-  list_remove (&thread_current()->allelem);
-  thread_current ()->status = THREAD_DYING;
+  list_remove (&cur->allelem);
+  cur->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
 }
@@ -512,16 +505,23 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
-  list_init(&t->childs);
+  list_init(&t->children_list);
   list_init(&t->files);
-  sema_init(&t->exec_sema,0);
-  t->exec_success=true;
-  t->exit_status =UINT32_MAX;
-  list_init(&t->files);
-  t->self_file = NULL;
-  t->next_fd = 2;
-  if(t==initial_thread) t->parent=NULL;
-  else t->parent = thread_current();
+
+  sema_init(&t->load_sema,0);
+  t->wait_child=NULL; // at thread_create()
+  if(t==initial_thread) 
+    t->parent=NULL;
+  else 
+    t->parent = thread_current();
+
+  //TODO: is this good?
+  t->exit_code=0;
+
+  t->load_success=true;
+  t->fd_cnt=2; // stdin stdout
+  t->exe=NULL; // set at load()
+
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
@@ -598,9 +598,10 @@ thread_schedule_tail (struct thread *prev)
     {
       ASSERT (prev != cur);
 
+      //TODO:
        // 释放资源：孩子list、files的list
-      while(!list_empty(&prev->childs)){
-        struct as_child_thread *act = list_entry (list_pop_front(&prev->childs), struct as_child_thread, child_thread_elem);
+      while(!list_empty(&prev->children_list)){
+        struct child_info *act = list_entry (list_pop_front(&prev->children_list), struct child_info, child_elem);
         free(act);
       }
 
@@ -653,6 +654,97 @@ void release_file_lock(){
   lock_release(&file_lock);
 }
 
+bool held_file_lock(){
+  return lock_held_by_current_thread(&file_lock);
+}
+
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof (struct thread, stack);
+
+
+void close_all_files(struct list* files)
+{
+  struct list_elem *elem;
+  struct opened_file *of;
+  while (!list_empty(files))
+  {
+    elem=list_pop_front(files);
+    of=list_entry(elem,struct opened_file,file_elem);
+    acquire_file_lock();
+    file_close(of->file);
+    release_file_lock();
+    free(of);
+  }
+  
+}
+
+
+struct child_info *get_child_info(struct thread *th, tid_t tid)
+{
+  struct list_elem *elem;
+  struct child_info *child_info;
+  
+  enum intr_level old_level = intr_disable();
+  for(elem=list_begin(&th->children_list);
+  elem!=list_end(&th->children_list);
+  elem=list_next(elem))
+  {
+    child_info=list_entry(elem,struct child_info,child_elem);
+    if(child_info->tid==tid)
+    {
+      intr_set_level(old_level);
+      return child_info;
+    }
+      
+  }
+  intr_set_level(old_level);
+  return NULL;
+}
+
+void add_child_info(struct thread *th,struct child_info *ch)
+{
+  list_push_back(&th->children_list,&ch->child_elem);
+}
+
+
+void remove_child_info(struct thread *th, tid_t tid)
+{
+  struct list_elem *elem;
+  struct child_info *child_info;
+  
+  enum intr_level old_level = intr_disable();
+  for(elem=list_begin(&th->children_list);
+  elem!=list_end(&th->children_list);
+  elem=list_next(elem))
+  {
+    child_info=list_entry(elem,struct child_info,child_elem);
+    if(child_info->tid==tid)
+    {
+      list_remove(elem);
+      free(child_info);
+      break;
+    }  
+  }
+  intr_set_level(old_level);
+}
+
+void remove_all_children_info(struct thread *th)
+{
+  struct list_elem *elem;
+  struct child_info *child_info;
+
+  enum intr_level old_level = intr_disable();
+  while (!list_empty(&th->children_list))
+  {
+    elem=list_pop_front(&th->children_list);
+    child_info=list_entry(elem,struct child_info,child_elem);
+
+    //orphaned process
+    if(!child_info->is_exit)
+      child_info->child->parent=NULL;
+
+    free(child_info);
+  }
+  intr_set_level(old_level);
+}

@@ -30,8 +30,11 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name)
 {
+  char *thread_name;
   tid_t tid;
+  char *save_ptr;
 
+  
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
 
@@ -40,10 +43,28 @@ process_execute (const char *file_name)
   strlcpy(fn_copy,file_name,strlen(file_name)+1);
   strlcpy(fn_copy2,file_name,strlen(file_name)+1);
 
+  
 
   /* Create a new thread to execute FILE_NAME. */
-  char * save_ptr;
-  fn_copy2 = strtok_r(fn_copy2," ",&save_ptr);
+  thread_name = strtok_r(fn_copy2," ",&save_ptr);
+
+
+  //for test case "exec-missing"
+  
+  acquire_file_lock();
+  struct file *f = filesys_open(thread_name);
+  release_file_lock();
+  if(f==NULL)
+  {
+    free(fn_copy);
+    free(fn_copy2);
+    return TID_ERROR;
+  }
+  acquire_file_lock();
+  file_close(f);
+  release_file_lock();
+  
+
   tid = thread_create (fn_copy2, PRI_DEFAULT, start_process, fn_copy);
   free (fn_copy2);
 
@@ -53,8 +74,9 @@ process_execute (const char *file_name)
   }
 
   //父进程阻塞，等待子进程load完
-  sema_down(&thread_current()->exec_sema);
-  if (!thread_current()->exec_success) return TID_ERROR;
+  sema_down(&thread_current()->load_sema);
+  if (!thread_current()->load_success) 
+    return TID_ERROR;
 
   return tid;
 }
@@ -124,14 +146,14 @@ start_process (void *file_name_)
     memcpy(if_.esp,&zero,sizeof(int));
 
     //load之后增加信号量，并且声明成功与否
-    thread_current()->parent->exec_success=true;
-    sema_up(&thread_current()->parent->exec_sema);
+    thread_current()->parent->load_success=true;
+    sema_up(&thread_current()->parent->load_sema);
   }
 
   /* If load failed, quit. */
   else{
-    thread_current()->parent->exec_success=false;
-    sema_up(&thread_current()->parent->exec_sema);
+    thread_current()->parent->load_success=false;
+    sema_up(&thread_current()->parent->load_sema);
     thread_exit ();
   }
 
@@ -159,18 +181,18 @@ int
 process_wait (tid_t child_tid UNUSED)
 {
   struct list_elem *e;
-  struct list *l = &thread_current()->childs;
-  struct as_child_thread *act=NULL;
+  struct list *l = &thread_current()->children_list;
+  struct child_info *act=NULL;
 
   //找到pid的孩子
   for (e = list_begin (l); e != list_end (l); e = list_next (e))
   {
-    act = list_entry (e, struct as_child_thread, child_thread_elem);
+    act = list_entry (e, struct child_info, child_elem);
     if(act->tid==child_tid){
       if (!act->bewaited){
         act->bewaited = true;
         //信号量减
-        sema_down(&act->sema);
+        sema_down(&act->wait_sema);
         break;
       } else return -1;
     }
@@ -178,7 +200,7 @@ process_wait (tid_t child_tid UNUSED)
   if (e == list_end(l)) return -1;
 
   //等到孩子退出后, 读取退出状态， 移走孩子元素并释放
-  int status = act->exit_status;
+  int status = act->exit_code;
   list_remove(e);
   free(act);
 
@@ -327,7 +349,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   //打开可执行文件成功后，不可写该可执行文件。
   file_deny_write(file);
-  t-> self_file = file;
+  t-> exe = file;
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -414,7 +436,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
  done:
   /* We arrive here whether the load is successful or not. */
 
-  //此处不关闭，当线程结束后再关闭
+
 //  file_close (file);
   release_file_lock();
   return success;
