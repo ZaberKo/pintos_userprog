@@ -311,10 +311,8 @@ thread_exit (void)
   intr_disable ();
 
   struct thread *cur=thread_current();
-  //打印退出的话
   printf("%s: exit(%d)\n",thread_name(),cur->exit_code);
 
-  //信号量加上
   cur->wait_child->exit_code=cur->exit_code;
   sema_up(&cur->wait_child->wait_sema);
 

@@ -104,15 +104,12 @@ start_process (void *file_name_)
   free (file_name);
 
   if(success){
-    /*成功load之后，把参数放入栈中*/
-    //读参数个数
     int argc=0;
     for ( token = strtok_r (fn_copy, " ", &save_ptr);token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
       argc++;
     }
     free(fn_copy);
 
-    //读参数
     int argv[argc];
     int i=0;
     for (token = strtok_r (fn_copy2, " ", &save_ptr);token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
@@ -122,10 +119,8 @@ start_process (void *file_name_)
     }
     free(fn_copy2);
 
-    //对齐
     while((int)if_.esp%4!=0) if_.esp--;
 
-    //参数地址入栈
     int zero=0;
     if_.esp-=4;
     memcpy(if_.esp,&zero, sizeof(int));
@@ -142,7 +137,6 @@ start_process (void *file_name_)
     if_.esp-=4;
     memcpy(if_.esp,&zero,sizeof(int));
 
-    //load之后增加信号量，并且声明成功与否
     thread_current()->parent->load_success=true;
     sema_up(&thread_current()->parent->load_sema);
   }
@@ -181,22 +175,19 @@ process_wait (tid_t child_tid UNUSED)
   struct list *l = &thread_current()->children_list;
   struct child_info *act=NULL;
 
-  //找到pid的孩子
   for (e = list_begin (l); e != list_end (l); e = list_next (e))
   {
     act = list_entry (e, struct child_info, child_elem);
     if(act->tid==child_tid){
       if (!act->bewaited){
         act->bewaited = true;
-        //信号量减
         sema_down(&act->wait_sema);
         break;
       } else return -1;
     }
   }
   if (e == list_end(l)) return -1;
-
-  //等到孩子退出后, 读取退出状态， 移走孩子元素并释放
+  
   int status = act->exit_code;
   list_remove(e);
   free(act);
