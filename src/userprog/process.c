@@ -112,6 +112,7 @@ start_process (void *file_name_)
 
     int argv[argc];
     int i=0;
+    int zero=0;
     for (token = strtok_r (fn_copy2, " ", &save_ptr);token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
       if_.esp-=(strlen(token)+1);
       memcpy(if_.esp,token,strlen(token)+1);
@@ -119,23 +120,33 @@ start_process (void *file_name_)
     }
     free(fn_copy2);
 
-    while((int)if_.esp%4!=0) if_.esp--;
+    // word-align
+    while((int)if_.esp%4!=0) 
+      if_.esp--;
 
-    int zero=0;
-    if_.esp-=4;
+    // null pointer sentinel
+    
+    if_.esp-=sizeof(char *);
     memcpy(if_.esp,&zero, sizeof(int));
 
-    for(int i=argc-1;i>=0;i--){
-      if_.esp-=4;
-      memcpy(if_.esp,&argv[i],sizeof(int));
+    for(int i=argc-1;i>=0;i--)
+    {
+      if_.esp-=sizeof(char *);
+      memcpy(if_.esp,&argv[i],sizeof(char *));
     }
+
+    //argv
     int argv_start=(int)if_.esp;
-    if_.esp-=4;
-    memcpy(if_.esp,&argv_start,sizeof(int));
-    if_.esp-=4;
+    if_.esp-=sizeof(char **);
+    memcpy(if_.esp,&argv_start,sizeof(char **));
+
+    //argc
+    if_.esp-=sizeof(int);
     memcpy(if_.esp,&argc,sizeof(int));
-    if_.esp-=4;
-    memcpy(if_.esp,&zero,sizeof(int));
+
+    //return addr
+    if_.esp-=sizeof(void (*)());
+    memcpy(if_.esp,&zero,sizeof(void (*)()));
 
     thread_current()->parent->load_success=true;
     sema_up(&thread_current()->parent->load_sema);
