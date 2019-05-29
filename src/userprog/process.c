@@ -104,17 +104,16 @@ start_process (void *file_name_)
   free (file_name);
 
   if(success){
-    /*成功load之后，把参数放入栈中*/
-    //读参数个数
     int argc=0;
     for ( token = strtok_r (fn_copy, " ", &save_ptr);token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
       argc++;
     }
     free(fn_copy);
 
-    //读参数
+
     int argv[argc];
     int i=0;
+    int zero=0;
     for (token = strtok_r (fn_copy2, " ", &save_ptr);token != NULL; token = strtok_r (NULL, " ", &save_ptr)){
       if_.esp-=(strlen(token)+1);
       memcpy(if_.esp,token,strlen(token)+1);
@@ -122,25 +121,33 @@ start_process (void *file_name_)
     }
     free(fn_copy2);
 
-    //对齐
-    while((int)if_.esp%4!=0) if_.esp--;
+    // word-align
+    while((int)if_.esp%4!=0) 
+      if_.esp--;
 
-    //参数地址入栈
-    int zero=0;
-    if_.esp-=4;
+    // null pointer sentinel
+    
+    if_.esp-=sizeof(char *);
     memcpy(if_.esp,&zero, sizeof(int));
 
-    for(int i=argc-1;i>=0;i--){
-      if_.esp-=4;
-      memcpy(if_.esp,&argv[i],sizeof(int));
+    for(int i=argc-1;i>=0;i--)
+    {
+      if_.esp-=sizeof(char *);
+      memcpy(if_.esp,&argv[i],sizeof(char *));
     }
+
+    //argv
     int argv_start=(int)if_.esp;
-    if_.esp-=4;
-    memcpy(if_.esp,&argv_start,sizeof(int));
-    if_.esp-=4;
+    if_.esp-=sizeof(char **);
+    memcpy(if_.esp,&argv_start,sizeof(char **));
+
+    //argc
+    if_.esp-=sizeof(int);
     memcpy(if_.esp,&argc,sizeof(int));
-    if_.esp-=4;
-    memcpy(if_.esp,&zero,sizeof(int));
+
+    //return addr
+    if_.esp-=sizeof(void (*)());
+    memcpy(if_.esp,&zero,sizeof(void (*)()));
 
     //load之后增加信号量，并且声明成功与否
     thread_current()->parent->load_success=true;

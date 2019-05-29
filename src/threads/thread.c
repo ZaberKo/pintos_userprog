@@ -13,6 +13,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "filesys/filesys.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -39,8 +40,8 @@ static struct thread *initial_thread;
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
 
-//用于文件操作的全局锁
-static struct lock file_lock;
+
+
 
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
@@ -95,7 +96,7 @@ thread_init (void)
   ASSERT (intr_get_level () == INTR_OFF);
 
   lock_init (&tid_lock);
-  lock_init(&file_lock);
+  
   list_init (&ready_list);
   list_init (&all_list);
 
