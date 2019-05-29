@@ -30,6 +30,8 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
 tid_t
 process_execute (const char *file_name)
 {
+  char *fn_copy;
+  char *fn_copy2;
   char *thread_name;
   tid_t tid;
   char *save_ptr;
@@ -38,19 +40,15 @@ process_execute (const char *file_name)
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
 
-  char *fn_copy=malloc(strlen(file_name)+1);
-  char *fn_copy2=malloc(strlen(file_name)+1);
+  fn_copy=malloc(strlen(file_name)+1);
+  fn_copy2=malloc(strlen(file_name)+1);
   strlcpy(fn_copy,file_name,strlen(file_name)+1);
   strlcpy(fn_copy2,file_name,strlen(file_name)+1);
-
-  
-
   /* Create a new thread to execute FILE_NAME. */
   thread_name = strtok_r(fn_copy2," ",&save_ptr);
 
 
   //for test case "exec-missing"
-  
   acquire_file_lock();
   struct file *f = filesys_open(thread_name);
   release_file_lock();
@@ -73,7 +71,6 @@ process_execute (const char *file_name)
     return tid;
   }
 
-  //父进程阻塞，等待子进程load完
   sema_down(&thread_current()->load_sema);
   if (!thread_current()->load_success) 
     return TID_ERROR;
@@ -347,9 +344,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
       goto done;
     }
 
-  //打开可执行文件成功后，不可写该可执行文件。
-  file_deny_write(file);
-  t-> exe = file;
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -428,16 +422,20 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (!setup_stack (esp))
     goto done;
 
+  file_deny_write(file);
+
+  t-> exe = file;
+  
+  success = true;
+
   /* Start address. */
   *eip = (void (*) (void)) ehdr.e_entry;
-
-  success = true;
 
  done:
   /* We arrive here whether the load is successful or not. */
 
 
-//  file_close (file);
+//  file_close (file); //don't close it
   release_file_lock();
   return success;
 }
